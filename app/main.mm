@@ -1,0 +1,169 @@
+// VolumeControl
+//
+// Provides software volume control for audio devices that lack hardware volume
+// (e.g. HDMI outputs). Also works as a universal volume control for all devices.
+
+#import <Cocoa/Cocoa.h>
+#import <AVFoundation/AVCaptureDevice.h>
+
+#import "VCAudioDeviceManager.h"
+#import "VCTermination.h"
+
+
+// Minimal app delegate — handles termination cleanup.
+@interface VCAppDelegate : NSObject <NSApplicationDelegate>
+@property (nonatomic) VCAudioDeviceManager* audioDevices;
+@end
+
+@implementation VCAppDelegate
+- (void) applicationWillTerminate:(NSNotification*)note {
+    #pragma unused (note)
+    if ([self.audioDevices isVirtualDeviceActive]) {
+        [self.audioDevices unsetVCDeviceAsOSDefault];
+    }
+}
+@end
+
+
+// Menu bar controller — speaker icon with scroll-to-adjust volume.
+@interface VCMenuBar : NSObject
+@property (nonatomic) NSStatusItem* statusItem;
+@property (nonatomic) VCAudioDeviceManager* audioDevices;
+@property (nonatomic) id scrollMonitor;
+@end
+
+@implementation VCMenuBar
+
+- (void) setupWithAudioDevices:(VCAudioDeviceManager*)devices {
+    self.audioDevices = devices;
+    self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
+
+    [self updateIcon];
+
+    NSMenu* menu = [[NSMenu alloc] init];
+
+    NSMenuItem* label = [[NSMenuItem alloc] initWithTitle:@"VolumeControl" action:nil keyEquivalent:@""];
+    [label setEnabled:NO];
+    [menu addItem:label];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
+
+    self.statusItem.menu = menu;
+
+    // Scroll on status bar icon to adjust volume.
+    self.scrollMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel
+                                                               handler:^NSEvent*(NSEvent* event) {
+        // Only respond if the mouse is over our status item.
+        NSRect frame = self.statusItem.button.window.frame;
+        NSPoint mouse = [NSEvent mouseLocation];
+        if (!NSPointInRect(mouse, frame)) {
+            return event;
+        }
+
+        float delta = event.scrollingDeltaY;
+        if (event.hasPreciseScrollingDeltas) {
+            delta *= 0.002f;  // Trackpad: fine-grained
+        } else {
+            delta *= 0.02f;   // Mouse wheel: coarser steps
+        }
+
+        float vol = [self.audioDevices volume] + delta;
+        [self.audioDevices setVolume:vol];
+        [self updateIcon];
+
+        return nil;  // Consume the event.
+    }];
+}
+
+- (void) dealloc {
+    if (self.scrollMonitor) {
+        [NSEvent removeMonitor:self.scrollMonitor];
+    }
+}
+
+- (void) updateIcon {
+    float vol = [self.audioDevices volume];
+    BOOL muted = [self.audioDevices isMuted];
+
+    NSString* symbolName;
+    if (muted || vol < 0.01f) {
+        symbolName = @"speaker.fill";
+    } else if (vol < 0.33f) {
+        symbolName = @"speaker.wave.1.fill";
+    } else if (vol < 0.66f) {
+        symbolName = @"speaker.wave.2.fill";
+    } else {
+        symbolName = @"speaker.wave.3.fill";
+    }
+
+    NSImage* icon = [NSImage imageWithSystemSymbolName:symbolName
+                             accessibilityDescription:@"VolumeControl"];
+    [icon setTemplate:YES];
+    self.statusItem.button.image = icon;
+}
+
+@end
+
+
+int main(int argc, const char* argv[]) {
+    #pragma unused (argc, argv)
+
+    @autoreleasepool {
+        NSApplication* app = [NSApplication sharedApplication];
+        [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
+
+        NSLog(@"VolumeControl: Starting...");
+
+        VCAudioDeviceManager* audioDevices = [VCAudioDeviceManager new];
+
+        if (!audioDevices) {
+            NSLog(@"VolumeControl: Could not find the virtual audio device driver.");
+            return 1;
+        }
+
+        VCTermination::SetUpTerminationCleanUp(audioDevices);
+
+        // App delegate for clean shutdown.
+        VCAppDelegate* delegate = [[VCAppDelegate alloc] init];
+        delegate.audioDevices = audioDevices;
+        [app setDelegate:delegate];
+
+        // Menu bar icon with scroll volume control.
+        VCMenuBar* menuBar = [[VCMenuBar alloc] init];
+        [menuBar setupWithAudioDevices:audioDevices];
+
+        // Update icon when volume changes externally (keyboard keys, system slider).
+        audioDevices.onVolumeChanged = ^{
+            [menuBar updateIcon];
+        };
+
+        // Request microphone permission. Block until granted.
+        if (@available(macOS 10.14, *)) {
+            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+            __block BOOL granted = NO;
+
+            [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
+                                     completionHandler:^(BOOL g) {
+                granted = g;
+                dispatch_semaphore_signal(sem);
+            }];
+
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+
+            if (!granted) {
+                NSLog(@"VolumeControl: Microphone permission denied.");
+                return 1;
+            }
+        }
+
+        // Scan devices and activate.
+        [audioDevices evaluateAndActivate];
+        [menuBar updateIcon];
+
+        NSLog(@"VolumeControl: Running.");
+
+        [app run];
+    }
+
+    return 0;
+}
