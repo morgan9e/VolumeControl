@@ -26,13 +26,23 @@
 
 
 // Menu bar controller — speaker icon with scroll-to-adjust volume.
-@interface VCMenuBar : NSObject
+@interface VCMenuBar : NSObject <NSMenuDelegate>
 @property (nonatomic) NSStatusItem* statusItem;
 @property (nonatomic) VCAudioDeviceManager* audioDevices;
 @property (nonatomic) id scrollMonitor;
+@property (nonatomic) NSSlider* volumeSlider;
 @end
 
 @implementation VCMenuBar
+
+- (void) sliderChanged:(NSSlider*)sender {
+    [self.audioDevices setVolume:sender.floatValue];
+    [self updateIcon];
+}
+
+- (void) menuWillOpen:(NSMenu*)menu {
+    self.volumeSlider.floatValue = [self.audioDevices volume];
+}
 
 - (void) setupWithAudioDevices:(VCAudioDeviceManager*)devices {
     self.audioDevices = devices;
@@ -41,10 +51,30 @@
     [self updateIcon];
 
     NSMenu* menu = [[NSMenu alloc] init];
+    menu.delegate = self;
 
     NSMenuItem* label = [[NSMenuItem alloc] initWithTitle:@"VolumeControl" action:nil keyEquivalent:@""];
     [label setEnabled:NO];
     [menu addItem:label];
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    // Slider menu item.
+    NSSlider* slider = [NSSlider sliderWithValue:[self.audioDevices volume]
+                                        minValue:0.0
+                                        maxValue:1.0
+                                          target:self
+                                          action:@selector(sliderChanged:)];
+    slider.controlSize = NSControlSizeSmall;
+
+    NSView* sliderView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 200, 28)];
+    slider.frame = NSMakeRect(14, 4, 172, 20);
+    [sliderView addSubview:slider];
+    self.volumeSlider = slider;
+
+    NSMenuItem* sliderItem = [[NSMenuItem alloc] init];
+    sliderItem.view = sliderView;
+    [menu addItem:sliderItem];
+
     [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
 
@@ -83,6 +113,9 @@
 
 - (void) updateIcon {
     float vol = [self.audioDevices volume];
+    if (self.volumeSlider) {
+        self.volumeSlider.floatValue = vol;
+    }
     BOOL muted = [self.audioDevices isMuted];
 
     NSString* symbolName;
