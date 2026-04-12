@@ -9,6 +9,38 @@
 #import "VCAudioDeviceManager.h"
 #import "VCTermination.h"
 
+@protocol OSDUIHelperProtocol
+- (void)showImage:(long long)image onDisplayID:(unsigned int)displayID
+         priority:(unsigned int)priority msecUntilFade:(unsigned int)fade
+    filledChiclets:(unsigned int)filled totalChiclets:(unsigned int)total
+           locked:(BOOL)locked;
+@end
+
+static const long long kOSDImageVolume = 3;
+
+static void ShowVolumeOSD(float volume) {
+    static NSXPCConnection* conn = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        conn = [[NSXPCConnection alloc] initWithMachServiceName:@"com.apple.OSDUIHelper"
+                                                        options:0];
+        conn.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(OSDUIHelperProtocol)];
+        [conn resume];
+    });
+
+    unsigned int filled = (unsigned int)(volume * 16 + 0.5f);
+    unsigned int total = 16;
+
+    id<OSDUIHelperProtocol> proxy = [conn remoteObjectProxy];
+    [proxy showImage:kOSDImageVolume
+         onDisplayID:CGMainDisplayID()
+            priority:0x1f4
+       msecUntilFade:1000
+      filledChiclets:filled
+       totalChiclets:total
+              locked:NO];
+}
+
 
 // Minimal app delegate — handles termination cleanup.
 @interface VCAppDelegate : NSObject <NSApplicationDelegate>
@@ -94,12 +126,13 @@
         if (event.hasPreciseScrollingDeltas) {
             delta *= 0.002f;  // Trackpad: fine-grained
         } else {
-            delta *= 0.02f;   // Mouse wheel: coarser steps
+            delta *= 0.05f;   // Mouse wheel: coarser steps
         }
 
         float vol = [self.audioDevices volume] + delta;
         [self.audioDevices setVolume:vol];
         [self updateIcon];
+        ShowVolumeOSD([self.audioDevices volume]);
 
         return nil;  // Consume the event.
     }];
